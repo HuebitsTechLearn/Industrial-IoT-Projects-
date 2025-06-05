@@ -1,0 +1,268 @@
+Here's the full working Arduino code for the Industrial Package Integrity Detection System using ESP8266, HX711 (load cell), DHT11 (humidity/temperature sensor), and MQTT.
+________________________________________
+Prerequisites:
+1.	Install these Arduino libraries:
+o	HX711 by bogde
+o	DHT sensor library by Adafruit
+o	Adafruit Unified Sensor
+o	PubSubClient for MQTT
+o	ESP8266WiFi
+________________________________________
+Code for ESP8266:
+cpp
+CopyEdit
+#include <ESP8266WiFi.h>
+#include <PubSubClient.h>
+#include "DHT.h"
+#include "HX711.h"
+
+// WiFi Credentials
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+
+// MQTT Broker Settings
+const char* mqtt_server = "broker.hivemq.com";  // or use your local server IP
+const char* topic = "industrial/packageMonitor";
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// DHT11 setup
+#define DHTPIN D2
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+// HX711 setup
+#define LOADCELL_DOUT_PIN D5
+#define LOADCELL_SCK_PIN D6
+HX711 scale;
+
+// Thresholds
+float weightThreshold = 100.0; // grams
+float humidityThreshold = 70.0; // percent
+
+void setup_wifi() {
+  delay(10);
+  Serial.println();
+  Serial.print("Connecting to WiFi ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("");
+  Serial.println("WiFi connected!");
+}
+
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    if (client.connect("ESP8266Client")) {
+      Serial.println("connected");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      delay(2000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  dht.begin();
+  scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
+  scale.set_scale();  // Set calibration factor manually if needed
+  scale.tare();       // Reset the scale to 0
+
+  setup_wifi();
+  client.setServer(mqtt_server, 1883);
+}
+
+void loop() {
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
+  float weight = scale.get_units(5);
+  float humidity = dht.readHumidity();
+  float temperature = dht.readTemperature();
+
+  String payload = "{";
+  payload += "\"weight\":" + String(weight, 2) + ",";
+  payload += "\"humidity\":" + String(humidity, 1) + ",";
+  payload += "\"temperature\":" + String(temperature, 1) + ",";
+  payload += "\"tampered\":" + String((weight < weightThreshold) ? "true" : "false") + ",";
+  payload += "\"humidityAlert\":" + String((humidity > humidityThreshold) ? "true" : "false");
+  payload += "}";
+
+  client.publish(topic, payload.c_str());
+  Serial.println(payload);
+
+  delay(10000); // Send every 10 seconds
+}
+
+
+
+Here’s your complete setup for the Industrial Package Integrity Detection System with:
+________________________________________
+What You're Getting:
+•Full Grafana Dashboard JSON
+•MQTT Broker Setup Guide
+•Optional Firebase Integration
+•Alert Setup using Grafana + InfluxDB OR Twilio
+________________________________________
+Step 1: MQTT Broker Setup (Mosquitto on Localhost/RPi)
+Install Mosquitto on your Linux machine or Raspberry Pi:
+bash
+CopyEdit
+sudo apt update
+sudo apt install mosquitto mosquitto-clients
+Config (Optional):
+Edit /etc/mosquitto/mosquitto.conf to allow anonymous:
+yaml
+CopyEdit
+listener 1883
+allow_anonymous true
+Start broker:
+bash
+CopyEdit
+sudo systemctl start mosquitto
+Test it:
+bash
+CopyEdit
+mosquitto_sub -t "industrial/packageMonitor" -v
+________________________________________
+Step 2: InfluxDB + Grafana Integration
+Sample Payload Stored via Node-RED or Python MQTT Client:
+Topic: industrial/packageMonitor
+json
+CopyEdit
+{
+  "weight": 85.45,
+  "humidity": 77.2,
+  "temperature": 31.4,
+  "tampered": true,
+  "humidityAlert": true
+}
+________________________________________
+Step 3: Grafana Dashboard JSON
+Here’s your Grafana dashboard template to visualize real-time data:
+<details> <summary>Click to Expand JSON</summary> 
+json
+CopyEdit
+{
+  "dashboard": {
+    "id": null,
+    "title": "Package Integrity Dashboard",
+    "timezone": "browser",
+    "panels": [
+      {
+        "title": "Package Weight (g)",
+        "type": "gauge",
+        "datasource": "InfluxDB",
+        "targets": [{
+          "query": "SELECT last(\"weight\") FROM \"package\" WHERE $timeFilter",
+          "refId": "A"
+        }],
+        "fieldConfig": {
+          "defaults": {
+            "min": 0,
+            "max": 150,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "color": "green", "value": null },
+                { "color": "red", "value": 100 }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "title": "Temperature (°C)",
+        "type": "timeseries",
+        "datasource": "InfluxDB",
+        "targets": [{
+          "query": "SELECT mean(\"temperature\") FROM \"package\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "refId": "B"
+        }]
+      },
+      {
+        "title": "Humidity (%)",
+        "type": "timeseries",
+        "datasource": "InfluxDB",
+        "targets": [{
+          "query": "SELECT mean(\"humidity\") FROM \"package\" WHERE $timeFilter GROUP BY time($__interval) fill(null)",
+          "refId": "C"
+        }]
+      },
+      {
+        "title": "Tamper Alert",
+        "type": "stat",
+        "datasource": "InfluxDB",
+        "targets": [{
+          "query": "SELECT last(\"tampered\") FROM \"package\" WHERE $timeFilter",
+          "refId": "D"
+        }],
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "color": "green", "value": 0 },
+                { "color": "red", "value": 1 }
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "schemaVersion": 30,
+    "version": 1
+  }
+}
+</details> 
+________________________________________
+Step 4: Alerting Setup (2 options)
+Option A: Grafana Alert (Email/Slack)
+1.	Go to Alerting → Contact Points
+2.	Add email/Slack webhook
+3.	In each panel, click "Create Alert Rule"
+4.	Use:
+sql
+CopyEdit
+WHEN last() OF query(A, 5m, now) IS ABOVE 100
+________________________________________
+Option B: Twilio SMS Integration via Node-RED
+1.	Set up Node-RED
+2.	Install Twilio node:
+bash
+CopyEdit
+npm install node-red-node-twilio
+3.	Flow:
+o	MQTT → Function Node → Twilio
+js
+CopyEdit
+// Function node
+if (msg.payload.humidity > 70 || msg.payload.tampered === true) {
+    msg.payload = "ALERT: Package integrity breach detected!";
+    return msg;
+}
+return null;
+________________________________________
+Optional: Firebase Realtime DB Integration
+Install:
+cpp
+CopyEdit
+#include <FirebaseESP8266.h>
+Add in loop:
+cpp
+CopyEdit
+Firebase.setFloat(firebaseData, "/package/weight", weight);
+Firebase.setFloat(firebaseData, "/package/humidity", humidity);
+Firebase.setBool(firebaseData, "/package/tampered", tampered);
+
