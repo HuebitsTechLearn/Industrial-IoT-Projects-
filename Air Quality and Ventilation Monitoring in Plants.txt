@@ -1,0 +1,159 @@
+the full firmware code for you right here in the chat. Here’s the complete Arduino code for Air Quality and Ventilation Monitoring in Plants using ESP32, MQ135, MQ2, DHT22, and ThingSpeak:
+________________________________________
+Firmware Code (ESP32 + ThingSpeak + Relay Fan Control)
+cpp
+CopyEdit
+#include <WiFi.h>
+#include "DHT.h"
+#include <HTTPClient.h>
+
+#define DHTPIN 4
+#define DHTTYPE DHT22
+
+#define MQ135_PIN 34
+#define MQ2_PIN 35
+#define RELAY_PIN 26
+
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+String apiKey = "YOUR_THINGSPEAK_API_KEY";
+
+DHT dht(DHTPIN, DHTTYPE);
+
+void setup() {
+  Serial.begin(115200);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Connecting to WiFi...");
+  }
+  Serial.println("Connected to WiFi");
+  
+  pinMode(MQ135_PIN, INPUT);
+  pinMode(MQ2_PIN, INPUT);
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW); // Fan off by default
+
+  dht.begin();
+}
+
+void loop() {
+  float temperature = dht.readTemperature();
+  float humidity = dht.readHumidity();
+  int mq135Value = analogRead(MQ135_PIN);
+  int mq2Value = analogRead(MQ2_PIN);
+
+  // Simple AQI estimation
+  int aqi = (mq135Value + mq2Value) / 2;
+
+  // Relay control logic
+  if (aqi > 300 || temperature > 35 || humidity > 80) {
+    digitalWrite(RELAY_PIN, HIGH); // Turn ON ventilation
+  } else {
+    digitalWrite(RELAY_PIN, LOW); // Turn OFF
+  }
+
+  // Send data to ThingSpeak
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    String url = "http://api.thingspeak.com/update?api_key=" + apiKey +
+                 "&field1=" + String(mq135Value) +
+                 "&field2=" + String(mq2Value) +
+                 "&field3=" + String(temperature) +
+                 "&field4=" + String(humidity) +
+                 "&field5=" + String(aqi);
+    http.begin(url);
+    int httpCode = http.GET();
+    http.end();
+  }
+
+  delay(20000); // Delay 20 seconds
+}
+________________________________________
+Just plug in your ThingSpeak API key and Wi-Fi credentials, and this baby is ready to monitor and automate!
+Here's the complete ESP32 firmware for your Air Quality and Ventilation Monitoring in Plants project using MQ135, MQ2, DHT22, and ThingSpeak, with automated relay fan control based on computed AQI.
+________________________________________
+🔧 ESP32 Firmware Code
+cpp
+CopyEdit
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include "DHT.h"
+
+// ----------- Configuration -----------
+#define DHTPIN 4
+#define DHTTYPE DHT22
+
+#define MQ135_PIN 34
+#define MQ2_PIN 35
+#define RELAY_PIN 26
+
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+String apiKey = "YOUR_THINGSPEAK_API_KEY";
+
+DHT dht(DHTPIN, DHTTYPE);
+
+// ---------- Setup Function ----------
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  pinMode(MQ135_PIN, INPUT);
+  pinMode(MQ2_PIN, INPUT);
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW); // Fan OFF initially
+
+  dht.begin();
+
+  // Connect to WiFi
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected to WiFi");
+}
+
+// ---------- Main Loop ----------
+void loop() {
+  float temp = dht.readTemperature();
+  float hum = dht.readHumidity();
+  int mq135Val = analogRead(MQ135_PIN);  // Approx air quality reading
+  int mq2Val = analogRead(MQ2_PIN);      // Flammable gas indicator
+
+  // Calculate rudimentary AQI
+  int aqi = (mq135Val + mq2Val) / 2;
+
+  // Fan control logic
+  if (aqi > 300 || temp > 35 || hum > 80) {
+    digitalWrite(RELAY_PIN, HIGH); // Turn ON exhaust fan
+    Serial.println("Poor Air Quality - Ventilation ON");
+  } else {
+    digitalWrite(RELAY_PIN, LOW); // Turn OFF
+    Serial.println("Air Quality Normal - Ventilation OFF");
+  }
+
+  // Send to ThingSpeak
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    String url = "http://api.thingspeak.com/update?api_key=" + apiKey +
+                 "&field1=" + String(temp) +
+                 "&field2=" + String(hum) +
+                 "&field3=" + String(mq135Val) +
+                 "&field4=" + String(mq2Val) +
+                 "&field5=" + String(aqi);
+    http.begin(url);
+    int httpCode = http.GET();
+    http.end();
+
+    Serial.println("📡 Data sent to ThingSpeak");
+  }
+
+  delay(20000); // Wait 20 seconds before next loop
+}
+________________________________________
+Replace Before Flashing:
+•	Replace "YOUR_WIFI_SSID" and "YOUR_WIFI_PASSWORD" with your network details.
+•	Replace "YOUR_THINGSPEAK_API_KEY" with your ThingSpeak Write API key.
