@@ -1,0 +1,163 @@
+here’s the Arduino code for your Cold Chain Logistics Monitoring system using DS18B20, GPS, GSM800, and SD card modules:
+cpp
+CopyEdit
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <SoftwareSerial.h>
+#include <SD.h>
+
+// Pin configuration
+#define ONE_WIRE_BUS 2
+#define GSM_TX 7
+#define GSM_RX 8
+#define GPS_RX 4
+#define GPS_TX 3
+#define SD_CS 10
+
+// Temperature threshold
+#define TEMP_MIN -2.0
+#define TEMP_MAX 8.0
+
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+SoftwareSerial gsm(GSM_RX, GSM_TX);
+SoftwareSerial gps(GPS_RX, GPS_TX);
+
+File logFile;
+
+void setup() {
+  Serial.begin(9600);
+  sensors.begin();
+  gsm.begin(9600);
+  gps.begin(9600);
+  
+  if (!SD.begin(SD_CS)) {
+    Serial.println("SD card initialization failed!");
+    return;
+  }
+  Serial.println("SD card initialized.");
+}
+
+void sendSMS(String message) {
+  gsm.println("AT+CMGF=1");
+  delay(1000);
+  gsm.println("AT+CMGS=\"+91XXXXXXXXXX\""); // Replace with your mobile number
+  delay(1000);
+  gsm.println(message);
+  gsm.write(26); // CTRL+Z to send SMS
+  delay(1000);
+}
+
+void loop() {
+  sensors.requestTemperatures();
+  float tempC = sensors.getTempCByIndex(0);
+
+  String gpsData = "";
+  while (gps.available()) {
+    char c = gps.read();
+    gpsData += c;
+    if (c == '\n') break;
+  }
+
+  String logEntry = "Temp: " + String(tempC) + " C, GPS: " + gpsData;
+  Serial.println(logEntry);
+
+  logFile = SD.open("coldlog.txt", FILE_WRITE);
+  if (logFile) {
+    logFile.println(logEntry);
+    logFile.close();
+  }
+
+  if (tempC < TEMP_MIN || tempC > TEMP_MAX) {
+    sendSMS("Cold chain breach! Temp: " + String(tempC) + "C");
+  }
+
+  delay(60000); // Log every 60 seconds
+}
+
+
+
+Arduino Code with Blynk + SMS + GPS + Temp Monitoring
+cpp
+CopyEdit
+#define BLYNK_PRINT Serial
+#include <SoftwareSerial.h>
+#include <BlynkSimpleSerial.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <TinyGPS++.h>
+
+// Pin Definitions
+#define ONE_WIRE_BUS 2
+#define GSM_TX 7
+#define GSM_RX 8
+#define GPS_RX 4
+#define GPS_TX 3
+
+// Temp Range for Cold Chain
+#define TEMP_MIN -2.0
+#define TEMP_MAX 8.0
+
+// Blynk Auth Token
+char auth[] = "YOUR_BLYNK_AUTH_TOKEN";  // Replace this
+
+SoftwareSerial gsm(GSM_RX, GSM_TX);
+SoftwareSerial gpsSerial(GPS_RX, GPS_TX);
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+TinyGPSPlus gps;
+
+float temperature;
+bool alertSent = false;
+
+void setup() {
+  Serial.begin(9600);
+  sensors.begin();
+  gsm.begin(9600);
+  gpsSerial.begin(9600);
+  Blynk.begin(auth, Serial);
+  delay(1000);
+}
+
+void loop() {
+  Blynk.run();
+  sensors.requestTemperatures();
+  temperature = sensors.getTempCByIndex(0);
+  
+  // Read GPS
+  while (gpsSerial.available()) {
+    gps.encode(gpsSerial.read());
+  }
+
+  // Send to Blynk
+  Blynk.virtualWrite(V0, temperature);
+  if (gps.location.isValid()) {
+    Blynk.virtualWrite(V1, gps.location.lat());
+    Blynk.virtualWrite(V2, gps.location.lng());
+  }
+
+  // Temp breach check
+  if ((temperature < TEMP_MIN || temperature > TEMP_MAX) && !alertSent) {
+    String msg = "Cold Chain Breach!\nTemp: " + String(temperature) + "°C\nLocation: " 
+               + String(gps.location.lat(), 6) + "," + String(gps.location.lng(), 6);
+    sendSMS(msg);
+    Blynk.virtualWrite(V3, 1);
+    alertSent = true;
+  } else if (temperature >= TEMP_MIN && temperature <= TEMP_MAX) {
+    alertSent = false;
+    Blynk.virtualWrite(V3, 0);
+  }
+
+  delay(60000); // Update every 1 minute
+}
+
+void sendSMS(String message) {
+  gsm.println("AT+CMGF=1");
+  delay(500);
+  gsm.println("AT+CMGS=\"+91XXXXXXXXXX\"");  // Replace with actual number
+  delay(500);
+  gsm.println(message);
+  gsm.write(26);  // ASCII code for CTRL+Z
+  delay(500);
+}
+
