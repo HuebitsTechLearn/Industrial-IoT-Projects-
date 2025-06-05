@@ -1,0 +1,114 @@
+Part 1: ESP32 Firmware (Arduino IDE)
+cpp
+CopyEdit
+#include <WiFi.h>
+#include <FirebaseESP32.h>
+#include <SPI.h>
+#include <MFRC522.h>
+#include <Servo.h>
+
+#define RST_PIN  22
+#define SS_PIN   21
+#define SERVO_PIN 18
+#define BUZZER 19
+
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+
+#define FIREBASE_HOST "YOUR_PROJECT.firebaseio.com"
+#define FIREBASE_AUTH "YOUR_FIREBASE_DATABASE_SECRET"
+
+FirebaseData fbdo;
+MFRC522 rfid(SS_PIN, RST_PIN);
+Servo lockServo;
+
+String uid = "";
+
+void setup() {
+  Serial.begin(115200);
+  SPI.begin();
+  rfid.PCD_Init();
+  WiFi.begin(ssid, password);
+  lockServo.attach(SERVO_PIN);
+  pinMode(BUZZER, OUTPUT);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Connecting...");
+  }
+
+  Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
+  Firebase.reconnectWiFi(true);
+  Serial.println("Ready");
+}
+
+void loop() {
+  if (!rfid.PICC_IsNewCardPresent()) return;
+  if (!rfid.PICC_ReadCardSerial()) return;
+
+  uid = "";
+  for (byte i = 0; i < rfid.uid.size; i++) {
+    uid += String(rfid.uid.uidByte[i] < 0x10 ? "0" : "");
+    uid += String(rfid.uid.uidByte[i], HEX);
+  }
+
+  uid.toUpperCase();
+  Serial.println("UID: " + uid);
+
+  String path = "/AccessControl/" + uid;
+  if (Firebase.getBool(fbdo, path + "/access") && fbdo.boolData()) {
+    Serial.println("Access Granted");
+    lockServo.write(90); // Unlock
+    digitalWrite(BUZZER, LOW);
+    Firebase.setString(fbdo, path + "/last_access", String(millis()));
+    delay(3000);
+    lockServo.write(0);  // Lock back
+  } else {
+    Serial.println("Access Denied");
+    digitalWrite(BUZZER, HIGH);
+    delay(1000);
+    digitalWrite(BUZZER, LOW);
+  }
+
+  rfid.PICC_HaltA();
+  rfid.PCD_StopCrypto1();
+}
+________________________________________
+Part 2: Firebase Realtime DB Structure
+json
+CopyEdit
+{
+  "AccessControl": {
+    "04AABB123456": {
+      "name": "John Doe",
+      "access": true,
+      "last_access": "timestamp"
+    },
+    "0987CCF100A1": {
+      "name": "Unauthorized",
+      "access": false
+    }
+  }
+}
+________________________________________
+Part 3: Google Cloud Function (Send Notification)
+javascript
+CopyEdit
+const functions = require("firebase-functions");
+const admin = require("firebase-admin");
+admin.initializeApp();
+
+exports.notifyAccess = functions.database.ref("/AccessControl/{uid}/last_access")
+  .onWrite((change, context) => {
+    const uid = context.params.uid;
+    const timestamp = change.after.val();
+    const payload = {
+      notification: {
+        title: "Access Granted",
+        body: `UID ${uid} accessed at ${timestamp}`
+      }
+    };
+
+    return admin.messaging().sendToTopic("access_updates", payload);
+  });
+
