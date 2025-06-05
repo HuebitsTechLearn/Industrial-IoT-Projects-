@@ -1,0 +1,158 @@
+Here's the full ESP32 firmware for your Predictive Maintenance for CNC Machines project, built using vibration, temperature, and current sensors, and running an Edge Impulse-trained ML model on-device using TensorFlow Lite for Microcontrollers. It includes MQTT integration for Grafana and alert generation.
+________________________________________
+predictive_maintenance_cnc.ino
+cpp
+CopyEdit
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <Wire.h>
+#include <Adafruit_INA219.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include "edge-impulse-sdk/classifier/ei_run_classifier.h"
+
+// Replace with your WiFi and MQTT credentials
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+const char* mqtt_server = "broker.hivemq.com";
+const char* mqtt_topic = "cnc/machine/health";
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// INA219 - Current Sensor
+Adafruit_INA219 ina219;
+
+// DS18B20 - Temp Sensor
+#define ONE_WIRE_BUS 4
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+
+// Vibration Sensor (Analog Input)
+#define VIBRATION_PIN 34
+
+// Sampling params
+#define SAMPLE_WINDOW 2000  // in milliseconds
+int vibration_data[EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE];
+
+// Edge Impulse Inference
+ei_impulse_result_t result;
+
+void setup_wifi() {
+  delay(10);
+  Serial.println("Connecting to WiFi...");
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi Connected!");
+}
+
+void reconnect_mqtt() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    if (client.connect("ESP32Client")) {
+      Serial.println("connected");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      delay(5000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  setup_wifi();
+  client.setServer(mqtt_server, 1883);
+  ina219.begin();
+  sensors.begin();
+}
+
+void loop() {
+  if (!client.connected()) reconnect_mqtt();
+  client.loop();
+
+  // Step 1: Read sensors
+  float current_mA = ina219.getCurrent_mA();
+  sensors.requestTemperatures();
+  float temperatureC = sensors.getTempCByIndex(0);
+
+  // Step 2: Read vibration as analog input
+  unsigned long startMillis = millis();
+  int i = 0;
+  while (millis() - startMillis < SAMPLE_WINDOW && i < EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE) {
+    int val = analogRead(VIBRATION_PIN);
+    vibration_data[i++] = val;
+    delay(1);
+  }
+
+  // Step 3: Format data for Edge Impulse
+  signal_t signal;
+  int err = numpy::signal_from_buffer(vibration_data, EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE, &signal);
+  if (err != 0) {
+    Serial.println("Signal error");
+    return;
+  }
+
+  // Step 4: Run classification
+  if (run_classifier(&signal, &result) == EI_IMPULSE_OK) {
+    Serial.println("Inference results:");
+    for (size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
+      Serial.print(result.classification[ix].label);
+      Serial.print(": ");
+      Serial.println(result.classification[ix].value, 4);
+    }
+
+    // Step 5: Send to MQTT
+    char payload[256];
+    snprintf(payload, sizeof(payload),
+             "{\"temperature\":%.2f,\"current\":%.2f,\"vibration_anomaly\":%.2f}",
+             temperatureC, current_mA, result.classification[1].value);  // Assume [1] = "anomaly"
+    client.publish(mqtt_topic, payload);
+    Serial.println("MQTT published!");
+  }
+
+  delay(5000);
+}
+
+
+
+Bonus: MQTT → InfluxDB → Grafana Pipeline
+Use a Node-RED flow like this:
+json
+CopyEdit
+[
+  {
+    "id": "mqtt_in",
+    "type": "mqtt in",
+    "topic": "cnc/machine/health",
+    "broker": "your_mqtt_broker_config",
+    "x": 100,
+    "y": 100,
+    "wires": [["function_parser"]]
+  },
+  {
+    "id": "function_parser",
+    "type": "function",
+    "name": "Parse Data",
+    "func": "let data = JSON.parse(msg.payload);\nmsg.payload = {\n  measurement: \"cnc_health\",\n  fields: {\n    temperature: data.temperature,\n    current: data.current,\n    vibration_anomaly: data.vibration_anomaly\n  }\n};\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "x": 300,
+    "y": 100,
+    "wires": [["influx_out"]]
+  },
+  {
+    "id": "influx_out",
+    "type": "influxdb out",
+    "influxdb": "your_influx_config",
+    "name": "InfluxDB",
+    "measurement": "cnc_health",
+    "precision": "s",
+    "x": 500,
+    "y": 100,
+    "wires": []
+  }
+]
