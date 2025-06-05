@@ -1,0 +1,192 @@
+Arduino Code for ESP32:
+cpp
+CopyEdit
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include "HX711.h"
+
+// WiFi Credentials
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+
+// AWS IoT MQTT details
+const char* mqtt_server = "YOUR_AWS_IOT_ENDPOINT";
+const int mqtt_port = 8883;
+
+// AWS IoT Certificates
+const char* certificate = "-----BEGIN CERTIFICATE-----\nYOUR_CERT_HERE\n-----END CERTIFICATE-----";
+const char* private_key = "-----BEGIN PRIVATE KEY-----\nYOUR_KEY_HERE\n-----END PRIVATE KEY-----";
+
+// HX711 Load Cell
+#define DOUT  4
+#define CLK  5
+HX711 scale;
+
+// Vibration Sensor Pin
+#define VIBRATION_PIN 34
+
+WiFiClientSecure wifiClient;
+PubSubClient client(wifiClient);
+
+void setup_wifi() {
+  delay(10);
+  Serial.println("Connecting to WiFi...");
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected");
+}
+
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    if (client.connect("ESP32Client")) {
+      Serial.println("connected");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      delay(2000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  scale.begin(DOUT, CLK);
+  pinMode(VIBRATION_PIN, INPUT);
+
+  wifiClient.setCACert(certificate);
+  wifiClient.setPrivateKey(private_key);
+  client.setServer(mqtt_server, mqtt_port);
+
+  setup_wifi();
+}
+
+void loop() {
+  if (!client.connected()) reconnect();
+  client.loop();
+
+  long weight = scale.get_units(10);
+  int vibration = analogRead(VIBRATION_PIN);
+
+  String payload = "{\"weight\":" + String(weight) + ",\"vibration\":" + String(vibration) + "}";
+  client.publish("factory/health", payload.c_str());
+
+  Serial.println(payload);
+  delay(2000);
+}
+
+
+1. AWS IoT Core Certificate & Key Integration
+To securely connect your ESP32 to AWS IoT Core:
+Step-by-Step:
+1.	Login to AWS IoT Core Console
+2.	Navigate to "Manage > Things" → Create a new thing (Single Thing)
+3.	Attach:
+o	Thing Name: ESP32_StructuralMonitor
+o	Type: Leave blank or create a custom one.
+4.	Create a new certificate & keys:
+o	Download:
+	certificate.pem.crt
+	private.pem.key
+	AmazonRootCA1.pem
+o	Save these to your ESP32 code base (usually as .h or embedded in flash).
+5.	Attach the certificate to a policy:
+o	Policy example:
+json
+CopyEdit
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "iot:*",
+      "Resource": "*"
+    }
+  ]
+}
+6.	Connect your ESP32 using MQTT over TLS (Port 8883).
+🔗 ESP32 Arduino Example (using PubSubClient + WiFiClientSecure)
+cpp
+CopyEdit
+WiFiClientSecure net;
+PubSubClient client(net);
+
+net.setCACert(AWS_CA_CERT);
+net.setCertificate(AWS_CERT_CRT);
+net.setPrivateKey(AWS_PRIVATE_KEY);
+
+client.setServer(MQTT_SERVER, 8883); // AWS endpoint
+________________________________________
+2. Grafana Dashboard JSON (via AWS IoT + InfluxDB or DynamoDB)
+Assuming you're storing AWS IoT MQTT data into InfluxDB (via a Lambda function or IoT Rule), here’s a minimal Grafana dashboard JSON snippet:
+Basic JSON Template:
+json
+CopyEdit
+{
+  "dashboard": {
+    "id": null,
+    "title": "Structural Health Monitoring",
+    "panels": [
+      {
+        "type": "graph",
+        "title": "Strain Gauge Over Time",
+        "targets": [
+          {
+            "measurement": "strain",
+            "refId": "A",
+            "query": "SELECT mean(\"value\") FROM \"strain\" WHERE $timeFilter GROUP BY time($__interval) fill(null)"
+          }
+        ]
+      },
+      {
+        "type": "graph",
+        "title": "Vibration Levels",
+        "targets": [
+          {
+            "measurement": "vibration",
+            "refId": "B",
+            "query": "SELECT mean(\"value\") FROM \"vibration\" WHERE $timeFilter GROUP BY time($__interval) fill(null)"
+          }
+        ]
+      }
+    ],
+    "time": {
+      "from": "now-6h",
+      "to": "now"
+    },
+    "schemaVersion": 22,
+    "version": 1
+  }
+}
+You'll need to adapt the database fields and measurement names according to your InfluxDB/Lambda configuration.
+________________________________________
+3. AWS or Twilio Alert Setup for Anomaly Detection
+Using AWS SNS for SMS Alerts:
+1.	Go to SNS > Topics → Create topic (structural_alerts)
+2.	Create a subscription with:
+o	Protocol: SMS
+o	Endpoint: Your phone number
+3.	In AWS IoT → Create a Rule:
+sql
+CopyEdit
+SELECT strain, vibration FROM 'iot/structure' WHERE strain > 800 OR vibration > 1.5
+4.	Set action: SNS → Send to topic structural_alerts
+Using Twilio API (Python Lambda or direct ESP32 if internet available):
+python
+CopyEdit
+from twilio.rest import Client
+
+def send_alert(msg):
+    account_sid = 'YOUR_SID'
+    auth_token = 'YOUR_TOKEN'
+    client = Client(account_sid, auth_token)
+
+    message = client.messages.create(
+        body=msg,
+        from_='+1234567890',
+        to='+1987654321'
+    )
+Hook this into an AWS Lambda triggered by IoT Rule or integrate in your ESP32's firmware directly.
