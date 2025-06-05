@@ -1,0 +1,120 @@
+Here's the full code for the Industrial Fire Detection with Edge AI project, written to run on Jetson Nano using OpenCV, TensorFlow Lite, and Node-RED integration for Firebase alerts. The thermal camera is the MLX90640, and the gas sensor is MQ-135.
+________________________________________
+fire_detection_edge_ai.py (Main Script on Jetson Nano)
+python
+CopyEdit
+import cv2
+import numpy as np
+import tflite_runtime.interpreter as tflite
+import time
+import board
+import busio
+import adafruit_mlx90640
+import serial
+import requests
+import json
+import smbus
+
+# Firebase Realtime Database
+FIREBASE_URL = "https://your-firebase-project.firebaseio.com/fire_alerts.json"
+
+# Load TFLite fire detection model
+interpreter = tflite.Interpreter(model_path="fire_model.tflite")
+interpreter.allocate_tensors()
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+# I2C interface for MLX90640 thermal sensor
+i2c = busio.I2C(board.SCL, board.SDA)
+mlx = adafruit_mlx90640.MLX90640(i2c)
+mlx.refresh_rate = adafruit_mlx90640.RefreshRate.REFRESH_2_HZ
+
+# Setup for MQ-135 Gas Sensor (via ADC or analog input)
+def read_mq135():
+    # Dummy analog read function for illustration
+    bus = smbus.SMBus(1)
+    analog_value = bus.read_byte_data(0x48, 0)
+    return analog_value
+
+# Firebase push
+def push_to_firebase(payload):
+    try:
+        result = requests.post(FIREBASE_URL, data=json.dumps(payload))
+        print("Firebase update:", result.status_code, result.text)
+    except Exception as e:
+        print("Firebase Error:", str(e))
+
+# Main loop
+while True:
+    try:
+        # Read temperature frame from MLX90640
+        frame = [0] * 768
+        mlx.getFrame(frame)
+        thermal_image = np.reshape(frame, (24, 32))
+        resized_img = cv2.resize(thermal_image, (224, 224))
+        input_data = np.expand_dims(resized_img.astype(np.float32), axis=0)
+        input_data = np.expand_dims(input_data, -1)
+
+        # Normalize to 0–1
+        input_data = (input_data - np.min(input_data)) / (np.max(input_data) - np.min(input_data))
+
+        # Run inference
+        interpreter.set_tensor(input_details[0]['index'], input_data)
+        interpreter.invoke()
+        output_data = interpreter.get_tensor(output_details[0]['index'])
+
+        fire_prob = output_data[0][0]
+        gas_value = read_mq135()
+
+        print(f"Fire Probability: {fire_prob:.2f} | Gas Level: {gas_value}")
+
+        if fire_prob > 0.75 or gas_value > 150:
+            alert = {
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "fire_detected": fire_prob > 0.75,
+                "gas_level": gas_value,
+                "status": "ALERT"
+            }
+            push_to_firebase(alert)
+
+        time.sleep(2)
+
+    except Exception as e:
+        print("Error:", str(e))
+________________________________________
+Node-RED Flow (Send Alerts via Telegram or Email)
+json
+CopyEdit
+[
+  {
+    "id": "telegram_alert",
+    "type": "http in",
+    "name": "Fire Alert Webhook",
+    "url": "/fire-alert",
+    "method": "post",
+    "swaggerDoc": "",
+    "x": 100,
+    "y": 100,
+    "wires": [["alert_parser"]]
+  },
+  {
+    "id": "alert_parser",
+    "type": "function",
+    "name": "Parse Fire Alert",
+    "func": "let data = msg.payload;\nlet text = `Fire Alert!\\nTimestamp: ${data.timestamp}\\nGas Level: ${data.gas_level}`;\nmsg.payload = {\n  chatId: 'YOUR_TELEGRAM_CHAT_ID',\n  type: 'message',\n  content: text\n};\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "x": 300,
+    "y": 100,
+    "wires": [["telegram_sender"]]
+  },
+  {
+    "id": "telegram_sender",
+    "type": "telegram sender",
+    "name": "Send Telegram",
+    "bot": "YOUR_TELEGRAM_BOT_CONFIG",
+    "x": 500,
+    "y": 100,
+    "wires": [[]]
+  }
+]
